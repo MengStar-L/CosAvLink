@@ -1,72 +1,63 @@
 # CosAvLink
 
-一个 Go 服务 + 网页：抓取 [cosplay.jav.pw](https://cosplay.jav.pw/) 的**最新视频**（名称 + 封面），
-点击某个视频时**实时**去 [javdb.com](https://javdb.com/) 查询该番号的**磁力链接**。
+cosplay.jav.pw 最新视频浏览 + javdb.com 磁力链接自动查询桌面工具。
 
-## 工作原理
+基于 [Wails v2](https://wails.io/) (Go + React) 构建，运行于 Windows 桌面。
 
-1. `cosplay.jav.pw` 是公开的 WordPress 站点，普通 HTTP 请求即可抓取列表（`net/http` + goquery）。
-2. 从标题（如 `[DSAM-002]`、`CME-003`）或封面文件名提取**番号**。无番号的同人/cosplay 条目会标记为「无番号」。
-3. 点击「获取磁力」→ 后端通过 **FlareSolverr** 自动解决 javdb 的 Cloudflare 验证 →
-   `/search?q=番号&f=all` → 详情页 `/v/xxx` → 解析 `#magnets-content` 的磁力链接。
-4. 结果带 **TTL 缓存**（命中 12h / 无结果 1h / 被拦截 2min），并用 `singleflight` 去重并发请求。
+## 功能
+
+- 自动抓取 cosplay.jav.pw 视频列表，16 条/页，支持翻页
+- 自动提取番号并在 javdb.com 查询磁力链接
+- 无番号时使用视频标题模糊搜索 javdb
+- 主磁力区无结果时自动从短评区提取用户分享的磁力
+- 磁力自动预取：卡片可见时即开始查询，无需手动点击
+- 下一页自动预取，翻页瞬间加载
+
+## 环境要求
+
+- Windows 10/11（WebView2 Runtime，通常已预装）
+- [Go 1.21+](https://go.dev/dl/)
+- [Node.js 18+](https://nodejs.org/)
+- [Wails CLI](https://wails.io/docs/gettingstarted/installation)：
+  ```bash
+  go install github.com/wailsapp/wails/v2/cmd/wails@latest
+  ```
+- [FlareSolverr](https://github.com/FlareSolverr/FlareSolverr)（用于自动解决 Cloudflare 验证）
 
 ## 运行
 
-需要 Go 1.26+，以及 [Docker](https://docs.docker.com/get-docker/)（用于运行 FlareSolverr）。
-
 ```bash
-# 1) 启动 FlareSolverr（自动解决 Cloudflare 验证）
-docker compose up -d
+# 1) 启动 FlareSolverr（需要 Docker）
+docker run -d --name flaresolverr -p 8191:8191 ghcr.io/flaresolverr/flaresolverr:latest
 
-# 2) 启动服务
-go run ./cmd/server
-# 打开 http://localhost:2300
+# 2) 开发模式
+wails dev
+
+# 3) 构建生产版本
+wails build
+# 产物在 build/bin/ 目录
 ```
 
-> 首次点击「获取磁力」时，FlareSolverr 会自动解决 Cloudflare 验证，可能需要等待 30-60 秒。
+## 配置
 
-## 配置（环境变量）
-
-| 变量 | 默认值 | 说明 |
-| --- | --- | --- |
-| `PORT` | `2300` | HTTP 端口 |
-| `FLARESOLVERR_URL` | `http://localhost:8191/v1` | FlareSolverr API 地址 |
-| `MAX_PARALLEL` | `2` | 并发请求数上限 |
-
-```bash
-# 例：自定义端口 + 远程 FlareSolverr
-PORT=3000 FLARESOLVERR_URL=http://my-server:8191/v1 go run ./cmd/server
-```
-
-## 关于 Cloudflare
-
-javdb 使用 Cloudflare 的 **managed challenge（Turnstile，即 "Just a moment…" 页面）**。
-本项目通过 [FlareSolverr](https://github.com/FlareSolverr/FlareSolverr) **自动解决**这些验证——
-FlareSolverr 使用内置的 undetected Chrome 浏览器，能够在大多数情况下自动通过 Cloudflare 的人机检测。
-
-只需确保 FlareSolverr 服务正在运行（`docker compose up -d`），程序会自动调用其 API 获取页面内容。
-如果被拦截，缓存会在 2 分钟后自动过期，下次请求会重新尝试。
-
-> 注意：如果你的网络/IP 被 Cloudflare 判定风险极高，FlareSolverr 也可能无法通过验证。
-> 此时可尝试更换 IP 或使用代理。
-
-## 登录与可见性
-
-- 普通有码片（DSAM/MIMK/CME 等，cosplay 的主力）设置 `over18=1` cookie 即可**免登录**看到磁力。
-- **FC2 / 部分无码**资源需要登录 javdb 才可见，这类条目可能显示为空。当前版本不登录。
+FlareSolverr 默认连接 `http://localhost:8191/v1`。如需修改，编辑 `app.go` 中的 URL。
 
 ## 目录结构
 
 ```
-cmd/server/main.go         入口：配置、HTTP 服务、优雅关闭
-internal/model/            Video / Magnet 数据结构
-internal/code/             番号提取（标题正则 + 封面文件名兜底）
-internal/cosplay/          cosplay.jav.pw 列表抓取（net/http + goquery）
-internal/flaresolverr/     FlareSolverr HTTP 客户端
-internal/javdb/            javdb 磁力抓取（缓存 + singleflight）
-internal/server/           HTTP handler + 内嵌网页模板
-docker-compose.yml         FlareSolverr Docker 部署
+main.go                      Wails 入口 + 窗口配置
+app.go                       Go 绑定（暴露给前端的函数）
+internal/
+  model/                     数据结构
+  cache/                     泛型 TTL 缓存
+  code/                      番号提取
+  cosplay/                   cosplay.jav.pw 分页抓取
+  flaresolverr/              FlareSolverr HTTP 客户端
+  javdb/                     javdb 磁力查找
+frontend/
+  src/                       React 前端源码
+  wailsjs/                   Wails JS 绑定（build 时自动生成）
+wails.json                   Wails 项目配置
 ```
 
 ## 免责声明

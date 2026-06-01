@@ -1,13 +1,15 @@
 # Go build artifacts
-/cosavlink
-/cosavlink.exe
+/build/bin/
 *.exe
+
+# Node modules
+/frontend/node_modules/
+
+# Vite cache
+/frontend/.vite/
 
 # Claude Code local settings
 /.claude/
-
-# Persistent Chrome profile used to keep the Cloudflare clearance cookie
-/.browser-profile/
 
 # Local scratch / scraped HTML dumps
 *_raw.html
