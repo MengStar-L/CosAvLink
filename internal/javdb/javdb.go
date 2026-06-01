@@ -1,13 +1,15 @@
-// Package javdb looks up magnet links on javdb.com for a given product code.
+// Package javdb looks up magnet links on javdb.com for a given product code
+// or title.
 //
 // javdb sits behind Cloudflare, so every lookup goes through FlareSolverr
-// (see package flaresolverr). Flow per code:
+// (see package flaresolverr). Flow:
 //
-//	/search?q=CODE&f=all  ->  pick best "a.box" result  ->  /v/XXXX detail page
+//	/search?q=QUERY&f=all  ->  pick best result  ->  /v/XXXX detail page
 //	->  parse "#magnets-content .item" rows for magnet URIs.
+//	->  if no magnets, parse "#short-comments" for user-posted magnet links.
 //
 // Results are cached (positive long, negative/blocked short) and concurrent
-// lookups of the same code are de-duplicated with singleflight.
+// lookups of the same query are de-duplicated with singleflight.
 package javdb
 
 import (
@@ -35,7 +37,10 @@ const (
 	blockedTTL  = 2 * time.Minute
 )
 
-var sizeRe = regexp.MustCompile(`(?i)([\d.]+\s*[GMT]?B)`)
+var (
+	sizeRe      = regexp.MustCompile(`(?i)([\d.]+\s*[GMT]?B)`)
+	magnetLinkRe = regexp.MustCompile(`magnet:\?xt=urn:btih:[a-zA-Z0-9]+[^\s<"]*`)
+)
 
 // Client performs javdb magnet lookups with caching + de-duplication.
 type Client struct {
@@ -49,25 +54,37 @@ func New(fs *flaresolverr.Client) *Client {
 	return &Client{fs: fs, cache: cache.New[string, model.MagnetResult]()}
 }
 
-// Magnets returns the magnet result for a normalized code. It never returns a
-// FlareSolverr/Cloudflare error to the caller — a block is reported via the
-// result's Blocked/Note fields so the UI can render it gracefully.
-func (c *Client) Magnets(ctx context.Context, rawCode string) (model.MagnetResult, error) {
-	code := strings.ToUpper(strings.TrimSpace(rawCode))
-	if code == "" {
-		return model.MagnetResult{Note: "无番号，无法查询"}, nil
+// Magnets returns the magnet result for a code or title. When code is
+// non-empty it is used for the search; otherwise title is used. It never
+// returns a FlareSolverr/Cloudflare error to the caller — a block is
+// reported via the result's Blocked/Note fields.
+func (c *Client) Magnets(ctx context.Context, code, title string) (model.MagnetResult, error) {
+	code = strings.ToUpper(strings.TrimSpace(code))
+	title = strings.TrimSpace(title)
+
+	if code == "" && title == "" {
+		return model.MagnetResult{Note: "无番号且无标题，无法查询"}, nil
 	}
-	if v, ok := c.cache.Get(code); ok {
+
+	// Cache key: prefer code, fall back to title.
+	cacheKey := code
+	if cacheKey == "" {
+		cacheKey = "title:" + title
+	}
+	if v, ok := c.cache.Get(cacheKey); ok {
 		return v, nil
 	}
 
-	v, err, _ := c.sf.Do(code, func() (any, error) {
-		// Detach from the request context so one client disconnecting doesn't
-		// abort a lookup shared by others.
+	v, err, _ := c.sf.Do(cacheKey, func() (any, error) {
 		ctx2, cancel := context.WithTimeout(context.Background(), lookupTimeout)
 		defer cancel()
 
-		res := c.lookup(ctx2, code)
+		var res model.MagnetResult
+		if code != "" {
+			res = c.lookup(ctx2, code, true)
+		} else {
+			res = c.lookup(ctx2, title, false)
+		}
 
 		ttl := positiveTTL
 		switch {
@@ -76,7 +93,7 @@ func (c *Client) Magnets(ctx context.Context, rawCode string) (model.MagnetResul
 		case len(res.Magnets) == 0:
 			ttl = negativeTTL
 		}
-		c.cache.Set(code, res, ttl)
+		c.cache.Set(cacheKey, res, ttl)
 		return res, nil
 	})
 	if err != nil {
@@ -86,13 +103,13 @@ func (c *Client) Magnets(ctx context.Context, rawCode string) (model.MagnetResul
 }
 
 // lookup performs the actual two-step fetch and parse through FlareSolverr.
-// It always returns a populated result; transport/Cloudflare problems set
-// Blocked + Note.
-func (c *Client) lookup(ctx context.Context, code string) model.MagnetResult {
-	res := model.MagnetResult{Code: code}
+// When isCode is true, the query is treated as a product code for exact
+// matching; otherwise it is a title for fuzzy matching.
+func (c *Client) lookup(ctx context.Context, query string, isCode bool) model.MagnetResult {
+	res := model.MagnetResult{Code: query, Query: query}
 
 	// --- step 1: search ---
-	searchURL := base + "/search?q=" + url.QueryEscape(code) + "&f=all"
+	searchURL := base + "/search?q=" + url.QueryEscape(query) + "&f=all"
 	result, err := c.fs.Get(ctx, searchURL)
 	if err != nil {
 		res.Note = fmt.Sprintf("查询出错：%v", err)
@@ -107,18 +124,23 @@ func (c *Client) lookup(ctx context.Context, code string) model.MagnetResult {
 	}
 
 	if !strings.Contains(result.HTML, "movie-list") {
-		res.Note = "javdb 未找到该番号"
+		res.Note = "javdb 未找到匹配结果"
 		return res
 	}
 
-	detailURL := pickResult(result.HTML, code)
+	var detailURL string
+	if isCode {
+		detailURL = pickResultByCode(result.HTML, query)
+	} else {
+		detailURL = pickResultByTitle(result.HTML, query)
+	}
 	if detailURL == "" {
 		res.Note = "javdb 未找到匹配结果"
 		return res
 	}
 	res.DetailURL = detailURL
 
-	// --- step 2: detail page magnets ---
+	// --- step 2: detail page ---
 	result2, err := c.fs.Get(ctx, detailURL)
 	if err != nil {
 		res.Note = fmt.Sprintf("查询详情页出错：%v", err)
@@ -132,14 +154,20 @@ func (c *Client) lookup(ctx context.Context, code string) model.MagnetResult {
 		return res
 	}
 
-	if !strings.Contains(result2.HTML, "magnets-content") {
-		res.Note = "未找到磁力（可能暂无资源，或需要登录查看）"
-		return res
+	// Try main magnets section first.
+	if strings.Contains(result2.HTML, "magnets-content") {
+		res.Magnets = parseMagnets(result2.HTML)
 	}
 
-	res.Magnets = parseMagnets(result2.HTML)
+	// Fallback: if no magnets found, try extracting from short comments.
 	if len(res.Magnets) == 0 {
-		res.Note = "该番号在 javdb 上暂无磁力（部分资源需登录）"
+		commentMagnets := parseCommentMagnets(result2.HTML)
+		if len(commentMagnets) > 0 {
+			res.Magnets = commentMagnets
+			res.Note = "磁力来自 javdb 短评（用户分享）"
+		} else {
+			res.Note = "未找到磁力（可能暂无资源，或需要登录查看）"
+		}
 	}
 	return res
 }
@@ -159,9 +187,9 @@ func extractTitle(html string) string {
 	return html[start : start+end]
 }
 
-// pickResult chooses the best search result href. It prefers a result whose
-// title's leading token equals the searched code, else the first result.
-func pickResult(html, code string) string {
+// pickResultByCode chooses the best search result href when searching by code.
+// It prefers a result whose title's leading token equals the searched code.
+func pickResultByCode(html, code string) string {
 	doc, err := goquery.NewDocumentFromReader(strings.NewReader(html))
 	if err != nil {
 		return ""
@@ -189,6 +217,70 @@ func pickResult(html, code string) string {
 	return absURL(href)
 }
 
+// pickResultByTitle chooses the best search result when searching by title.
+// It uses fuzzy matching: any result whose title contains significant words
+// from the search query is preferred; otherwise the first result is used.
+func pickResultByTitle(html, query string) string {
+	doc, err := goquery.NewDocumentFromReader(strings.NewReader(html))
+	if err != nil {
+		return ""
+	}
+
+	queryWords := extractSignificantWords(query)
+	var first, best string
+	bestScore := 0
+
+	doc.Find("div.movie-list .item a.box").EachWithBreak(func(_ int, a *goquery.Selection) bool {
+		href, ok := a.Attr("href")
+		if !ok || href == "" {
+			return true
+		}
+		if first == "" {
+			first = href
+		}
+		title := strings.TrimSpace(a.Find(".video-title").First().Text())
+		if title == "" {
+			return true
+		}
+
+		// Score: number of query words found in the result title.
+		score := 0
+		titleLower := strings.ToLower(title)
+		for _, w := range queryWords {
+			if strings.Contains(titleLower, w) {
+				score++
+			}
+		}
+		if score > bestScore {
+			bestScore = score
+			best = href
+		}
+		return true
+	})
+
+	href := best
+	if href == "" || bestScore == 0 {
+		href = first
+	}
+	return absURL(href)
+}
+
+// extractSignificantWords splits text into lowercase words of 2+ chars,
+// filtering out common stop words and very short tokens.
+func extractSignificantWords(text string) []string {
+	words := strings.Fields(strings.ToLower(text))
+	var out []string
+	for _, w := range words {
+		// Strip punctuation from edges.
+		w = strings.Trim(w, "[](){}.,;:!?\"'`~@#$%^&*+=/\\|<>")
+		if len(w) >= 2 {
+			out = append(out, w)
+		}
+	}
+	return out
+}
+
+// parseMagnets extracts magnet links from the main #magnets-content section.
 func parseMagnets(html string) []model.Magnet {
 	doc, err := goquery.NewDocumentFromReader(strings.NewReader(html))
 	if err != nil {
@@ -213,6 +305,29 @@ func parseMagnets(html string) []model.Magnet {
 		})
 		out = append(out, m)
 	})
+	return out
+}
+
+// parseCommentMagnets extracts magnet links posted by users in the short
+// comments section (#short-comments). These are plain-text magnet URIs
+// embedded in comment bodies.
+func parseCommentMagnets(html string) []model.Magnet {
+	seen := make(map[string]bool)
+	var out []model.Magnet
+
+	// Use regex to find all magnet links in the entire HTML.
+	// This catches magnets in comments that may not be in proper link elements.
+	for _, match := range magnetLinkRe.FindAllString(html, -1) {
+		if seen[match] {
+			continue
+		}
+		seen[match] = true
+		out = append(out, model.Magnet{
+			Link:   match,
+			Name:   dnParam(match),
+			Source: "comment",
+		})
+	}
 	return out
 }
 

@@ -19,7 +19,7 @@
   }
   header h1 { font-size: 18px; margin: 0; }
   header .sub { color: #8a94a6; font-size: 13px; }
-  main { padding: 18px 20px 60px; }
+  main { padding: 18px 20px 20px; }
   .err-banner { background: #3a1d1d; border: 1px solid #7a3030; color: #ffb3b3;
     padding: 10px 14px; border-radius: 8px; margin-bottom: 16px; }
   .grid {
@@ -41,6 +41,7 @@
     padding: 7px 10px; font-size: 13px; cursor: pointer; }
   .btn:hover { background: #2ea043; }
   .btn:disabled { background: #30363d; color: #8a94a6; cursor: default; }
+  .btn.prefetch { background: #30363d; color: #8a94a6; cursor: default; }
   .magnets { font-size: 12px; }
   .magnets .loading { color: #8a94a6; padding: 6px 0; }
   .magnets .warn { color: #d29922; padding: 6px 0; }
@@ -51,25 +52,40 @@
   .mname { color: #cdd5e0; word-break: break-all; }
   .mmeta { display: flex; flex-wrap: wrap; gap: 6px; margin: 5px 0; color: #8a94a6; }
   .mmeta .t { background: #30363d; color: #adbac7; border-radius: 4px; padding: 0 6px; }
+  .mmeta .src { background: #1f6feb33; color: #79c0ff; border-radius: 4px; padding: 0 6px; font-style: italic; }
   .mact { display: flex; gap: 8px; }
   .mact a.open { flex: 1; text-align: center; background: #1f6feb; color: #fff; border-radius: 6px;
     padding: 5px; text-decoration: none; }
   .mact a.open:hover { background: #388bfd; }
   .mact .copy { background: #30363d; color: #cdd5e0; border: none; border-radius: 6px; padding: 5px 10px; cursor: pointer; }
   .mact .copy:hover { background: #3c444d; }
+
+  /* Pagination */
+  .pager {
+    display: flex; justify-content: center; align-items: center; gap: 12px;
+    padding: 20px 0 10px; flex-wrap: wrap;
+  }
+  .pager button {
+    background: #238636; color: #fff; border: none; border-radius: 7px;
+    padding: 8px 20px; font-size: 14px; cursor: pointer;
+  }
+  .pager button:hover { background: #2ea043; }
+  .pager button:disabled { background: #30363d; color: #8a94a6; cursor: default; }
+  .pager .page-info { color: #8a94a6; font-size: 14px; }
+
   footer { color: #6e7681; font-size: 12px; padding: 0 20px 30px; }
 </style>
 </head>
 <body>
 <header>
   <h1>CosAvLink</h1>
-  <span class="sub">cosplay.jav.pw 最新视频 · 点击「获取磁力」实时查询 javdb</span>
+  <span class="sub">cosplay.jav.pw 最新视频 · 磁力自动从 javdb 获取</span>
 </header>
 <main>
   {{if .Error}}<div class="err-banner">{{.Error}}</div>{{end}}
-  <div class="grid">
+  <div class="grid" id="video-grid">
     {{range .Videos}}
-    <div class="card">
+    <div class="card" data-code="{{.Code}}" data-title="{{.Title}}" data-detail="{{.DetailURL}}">
       <a class="cover" href="{{.DetailURL}}" target="_blank" rel="noopener noreferrer">
         <img loading="lazy" src="{{.Cover}}" alt="">
       </a>
@@ -78,89 +94,249 @@
         <div class="meta">
           {{if .Code}}<span class="code">{{.Code}}</span>{{else}}<span class="nocode">无番号</span>{{end}}
         </div>
-        {{if .Code}}<button class="btn" data-code="{{.Code}}">获取磁力</button>{{end}}
+        <button class="btn prefetch" disabled>等待中…</button>
         <div class="magnets" hidden></div>
       </div>
     </div>
     {{end}}
+  </div>
+  <div class="pager" id="pager">
+    <button id="prev-btn" disabled>上一页</button>
+    <span class="page-info" id="page-info">第 1 页</span>
+    <button id="next-btn">下一页</button>
   </div>
 </main>
 <footer>
   仅用于个人学习与技术研究。磁力链接来自第三方网站 javdb.com，资源与版权由对应站点负责。
 </footer>
 <script>
-document.querySelectorAll('.btn[data-code]').forEach(function (btn) {
-  btn.addEventListener('click', function () { loadMagnets(btn); });
-});
+(function () {
+  var currentPage = 1;
+  var prefetchedPages = {};  // pageNum -> {videos: [...]}
+  var magnetCache = {};      // cacheKey -> magnet result
+  var magnetQueue = [];
+  var magnetFetching = false;
 
-async function loadMagnets(btn) {
-  var code = btn.dataset.code;
-  var box = btn.parentElement.querySelector('.magnets');
-  var orig = btn.textContent;
-  btn.disabled = true;
-  btn.textContent = '加载中…';
-  box.hidden = false;
-  box.innerHTML = '<div class="loading">正在通过无头浏览器查询 javdb…（首次或遇到 Cloudflare 时较慢）</div>';
-  try {
-    var r = await fetch('/api/magnets?code=' + encodeURIComponent(code));
-    var data = await r.json();
-    renderMagnets(box, data);
-  } catch (e) {
-    box.innerHTML = '<div class="err">请求失败：' + escapeHtml(String(e)) + '</div>';
-  } finally {
-    btn.disabled = false;
-    btn.textContent = orig;
-  }
-}
-
-function renderMagnets(box, data) {
-  if (data.error) { box.innerHTML = '<div class="err">' + escapeHtml(data.error) + '</div>'; return; }
-
-  var detail = data.detailUrl
-    ? '<a class="detail" target="_blank" rel="noopener noreferrer" href="' + escapeAttr(data.detailUrl) + '">在 javdb 查看 ↗</a>'
-    : '';
-
-  if (data.blocked) {
-    box.innerHTML = '<div class="warn">' + escapeHtml(data.note || '被 Cloudflare 拦截，请稍后重试') + '</div>';
-    return;
-  }
-  var list = data.magnets || [];
-  if (!list.length) {
-    box.innerHTML = '<div class="warn">' + escapeHtml(data.note || '暂无磁力') + '</div>' + detail;
-    return;
-  }
-
-  var html = detail + '<ul class="mlist">';
-  list.forEach(function (m) {
-    var tags = (m.tags || []).map(function (t) { return '<span class="t">' + escapeHtml(t) + '</span>'; }).join('');
-    var meta = (m.size ? '<span>' + escapeHtml(m.size) + '</span>' : '')
-             + (m.date ? '<span>' + escapeHtml(m.date) + '</span>' : '') + tags;
-    html += '<li>'
-      + '<div class="mname">' + escapeHtml(m.name || 'magnet') + '</div>'
-      + '<div class="mmeta">' + meta + '</div>'
-      + '<div class="mact">'
-      + '<a class="open" href="' + escapeAttr(m.link) + '">打开磁力</a>'
-      + '<button class="copy" data-link="' + escapeAttr(m.link) + '">复制</button>'
-      + '</div></li>';
+  // --- Pagination ---
+  document.getElementById('prev-btn').addEventListener('click', function () {
+    if (currentPage > 1) goToPage(currentPage - 1);
   });
-  html += '</ul>';
-  box.innerHTML = html;
+  document.getElementById('next-btn').addEventListener('click', function () {
+    goToPage(currentPage + 1);
+  });
 
-  box.querySelectorAll('.copy').forEach(function (b) {
-    b.addEventListener('click', function () {
-      navigator.clipboard.writeText(b.dataset.link).then(function () {
-        b.textContent = '已复制'; setTimeout(function () { b.textContent = '复制'; }, 1500);
+  function updatePager(page) {
+    currentPage = page;
+    document.getElementById('page-info').textContent = '第 ' + page + ' 页';
+    document.getElementById('prev-btn').disabled = page <= 1;
+  }
+
+  async function goToPage(page) {
+    var grid = document.getElementById('video-grid');
+
+    // Use prefetched data if available.
+    var data;
+    if (prefetchedPages[page]) {
+      data = prefetchedPages[page];
+      delete prefetchedPages[page];
+    } else {
+      grid.innerHTML = '<div style="grid-column:1/-1;text-align:center;color:#8a94a6;padding:40px 0;">加载中…</div>';
+      try {
+        var r = await fetch('/api/videos?page=' + page);
+        data = await r.json();
+      } catch (e) {
+        grid.innerHTML = '<div class="err-banner" style="grid-column:1/-1;">加载失败：' + escapeHtml(String(e)) + '</div>';
+        return;
+      }
+    }
+
+    if (data.error) {
+      grid.innerHTML = '<div class="err-banner" style="grid-column:1/-1;">' + escapeHtml(data.error) + '</div>';
+      return;
+    }
+    if (!data.videos || !data.videos.length) {
+      grid.innerHTML = '<div style="grid-column:1/-1;text-align:center;color:#8a94a6;padding:40px 0;">没有更多视频了</div>';
+      return;
+    }
+
+    renderVideos(grid, data.videos);
+    updatePager(page);
+
+    // Auto-prefetch next page of videos.
+    prefetchNextPage(page + 1);
+
+    // Auto-prefetch magnets for visible cards.
+    observeCards();
+  }
+
+  function prefetchNextPage(page) {
+    if (prefetchedPages[page]) return;
+    fetch('/api/videos?page=' + page)
+      .then(function (r) { return r.json(); })
+      .then(function (data) { if (data.videos && data.videos.length) prefetchedPages[page] = data; })
+      .catch(function () {});
+  }
+
+  function renderVideos(grid, videos) {
+    grid.innerHTML = '';
+    videos.forEach(function (v) {
+      var card = document.createElement('div');
+      card.className = 'card';
+      card.dataset.code = v.code || '';
+      card.dataset.title = v.title || '';
+      card.dataset.detail = v.detailUrl || '';
+
+      var codeOrNocode = v.code
+        ? '<span class="code">' + escapeHtml(v.code) + '</span>'
+        : '<span class="nocode">无番号</span>';
+
+      card.innerHTML =
+        '<a class="cover" href="' + escapeAttr(v.detailUrl || '#') + '" target="_blank" rel="noopener noreferrer">'
+        + '<img loading="lazy" src="' + escapeAttr(v.cover || '') + '" alt="">'
+        + '</a>'
+        + '<div class="body">'
+        + '<div class="title" title="' + escapeAttr(v.title || '') + '">' + escapeHtml(v.title || '') + '</div>'
+        + '<div class="meta">' + codeOrNocode + '</div>'
+        + '<button class="btn prefetch" disabled>等待中…</button>'
+        + '<div class="magnets" hidden></div>'
+        + '</div>';
+      grid.appendChild(card);
+    });
+  }
+
+  // --- IntersectionObserver for auto magnet prefetch ---
+  var observer = null;
+
+  function observeCards() {
+    if (observer) observer.disconnect();
+    observer = new IntersectionObserver(function (entries) {
+      entries.forEach(function (entry) {
+        if (entry.isIntersecting) {
+          var card = entry.target;
+          observer.unobserve(card);
+          autoFetchMagnets(card);
+        }
+      });
+    }, { rootMargin: '200px' });
+
+    document.querySelectorAll('.card').forEach(function (card) {
+      observer.observe(card);
+    });
+  }
+
+  function autoFetchMagnets(card) {
+    var btn = card.querySelector('.btn');
+    var box = card.querySelector('.magnets');
+    var code = card.dataset.code || '';
+    var title = card.dataset.title || '';
+
+    // Build cache key.
+    var cacheKey = code || ('title:' + title);
+    if (magnetCache[cacheKey]) {
+      renderMagnets(box, magnetCache[cacheKey]);
+      box.hidden = false;
+      btn.textContent = '刷新磁力';
+      btn.className = 'btn';
+      btn.disabled = false;
+      btn.onclick = function () { manualRefresh(card); };
+      return;
+    }
+
+    btn.textContent = '加载中…';
+    btn.className = 'btn prefetch';
+    btn.disabled = true;
+    box.hidden = false;
+    box.innerHTML = '<div class="loading">正在查询 javdb…</div>';
+
+    var url = '/api/magnets?';
+    if (code) url += 'code=' + encodeURIComponent(code);
+    if (title) {
+      if (code) url += '&';
+      url += 'title=' + encodeURIComponent(title);
+    }
+
+    fetch(url)
+      .then(function (r) { return r.json(); })
+      .then(function (data) {
+        magnetCache[cacheKey] = data;
+        renderMagnets(box, data);
+        btn.textContent = '刷新磁力';
+        btn.className = 'btn';
+        btn.disabled = false;
+        btn.onclick = function () { manualRefresh(card); };
+      })
+      .catch(function (e) {
+        box.innerHTML = '<div class="err">请求失败：' + escapeHtml(String(e)) + '</div>';
+        btn.textContent = '重试';
+        btn.className = 'btn';
+        btn.disabled = false;
+        btn.onclick = function () { manualRefresh(card); };
+      });
+  }
+
+  function manualRefresh(card) {
+    var code = card.dataset.code || '';
+    var title = card.dataset.title || '';
+    var cacheKey = code || ('title:' + title);
+    delete magnetCache[cacheKey];
+    autoFetchMagnets(card);
+  }
+
+  // --- Render ---
+  function renderMagnets(box, data) {
+    if (data.error) { box.innerHTML = '<div class="err">' + escapeHtml(data.error) + '</div>'; return; }
+
+    var detail = data.detailUrl
+      ? '<a class="detail" target="_blank" rel="noopener noreferrer" href="' + escapeAttr(data.detailUrl) + '">在 javdb 查看 ↗</a>'
+      : '';
+
+    if (data.blocked) {
+      box.innerHTML = '<div class="warn">' + escapeHtml(data.note || '被 Cloudflare 拦截，请稍后重试') + '</div>';
+      return;
+    }
+    var list = data.magnets || [];
+    if (!list.length) {
+      box.innerHTML = '<div class="warn">' + escapeHtml(data.note || '暂无磁力') + '</div>' + detail;
+      return;
+    }
+
+    var html = detail + '<ul class="mlist">';
+    list.forEach(function (m) {
+      var tags = (m.tags || []).map(function (t) { return '<span class="t">' + escapeHtml(t) + '</span>'; }).join('');
+      if (m.source === 'comment') tags += '<span class="src">短评</span>';
+      var meta = (m.size ? '<span>' + escapeHtml(m.size) + '</span>' : '')
+               + (m.date ? '<span>' + escapeHtml(m.date) + '</span>' : '') + tags;
+      html += '<li>'
+        + '<div class="mname">' + escapeHtml(m.name || 'magnet') + '</div>'
+        + '<div class="mmeta">' + meta + '</div>'
+        + '<div class="mact">'
+        + '<a class="open" href="' + escapeAttr(m.link) + '">打开磁力</a>'
+        + '<button class="copy" data-link="' + escapeAttr(m.link) + '">复制</button>'
+        + '</div></li>';
+    });
+    html += '</ul>';
+    box.innerHTML = html;
+
+    box.querySelectorAll('.copy').forEach(function (b) {
+      b.addEventListener('click', function () {
+        navigator.clipboard.writeText(b.dataset.link).then(function () {
+          b.textContent = '已复制'; setTimeout(function () { b.textContent = '复制'; }, 1500);
+        });
       });
     });
-  });
-}
+  }
 
-function escapeHtml(s) {
-  return String(s).replace(/[&<>"']/g, function (c) {
-    return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
-  });
-}
-function escapeAttr(s) { return escapeHtml(s); }
+  function escapeHtml(s) {
+    return String(s).replace(/[&<>"']/g, function (c) {
+      return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
+    });
+  }
+  function escapeAttr(s) { return escapeHtml(s); }
+
+  // --- Init: observe cards on first page load ---
+  observeCards();
+  prefetchNextPage(2);
+})();
 </script>
 </body>
 </html>

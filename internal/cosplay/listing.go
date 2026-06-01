@@ -27,7 +27,6 @@ import (
 const (
 	homeURL   = "https://cosplay.jav.pw/"
 	userAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36"
-	cacheKey  = "home"
 	cacheTTL  = 10 * time.Minute
 )
 
@@ -45,22 +44,36 @@ func New() *Client {
 	}
 }
 
-// Latest returns the videos on the first listing page, using a short-lived
-// cache so repeated page loads don't refetch the source on every request.
+// Latest returns the videos on the first listing page.
 func (c *Client) Latest(ctx context.Context) ([]model.Video, error) {
-	if v, ok := c.cache.Get(cacheKey); ok {
+	return c.Page(ctx, 1)
+}
+
+// Page returns the videos on the given listing page (1-indexed).
+// Page 1 = home, page N = https://cosplay.jav.pw/page/N/.
+func (c *Client) Page(ctx context.Context, pageNum int) ([]model.Video, error) {
+	if pageNum < 1 {
+		pageNum = 1
+	}
+	key := fmt.Sprintf("page:%d", pageNum)
+	if v, ok := c.cache.Get(key); ok {
 		return v, nil
 	}
-	videos, err := c.fetch(ctx)
+	videos, err := c.fetchPage(ctx, pageNum)
 	if err != nil {
 		return nil, err
 	}
-	c.cache.Set(cacheKey, videos, cacheTTL)
+	c.cache.Set(key, videos, cacheTTL)
 	return videos, nil
 }
 
-func (c *Client) fetch(ctx context.Context) ([]model.Video, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, homeURL, nil)
+func (c *Client) fetchPage(ctx context.Context, pageNum int) ([]model.Video, error) {
+	listURL := homeURL
+	if pageNum > 1 {
+		listURL = homeURL + "page/" + fmt.Sprintf("%d", pageNum) + "/"
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, listURL, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -70,11 +83,11 @@ func (c *Client) fetch(ctx context.Context) ([]model.Video, error) {
 
 	resp, err := c.http.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("fetch cosplay home: %w", err)
+		return nil, fmt.Errorf("fetch cosplay page %d: %w", pageNum, err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("cosplay home returned HTTP %d", resp.StatusCode)
+		return nil, fmt.Errorf("cosplay page %d returned HTTP %d", pageNum, resp.StatusCode)
 	}
 
 	doc, err := goquery.NewDocumentFromReader(resp.Body)

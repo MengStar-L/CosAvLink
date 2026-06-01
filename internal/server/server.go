@@ -1,4 +1,5 @@
-// Package server exposes the web UI: a listing page plus a lazy magnet API.
+// Package server exposes the web UI: a listing page plus APIs for videos
+// and magnet lookups.
 package server
 
 import (
@@ -8,6 +9,7 @@ import (
 	"html/template"
 	"log"
 	"net/http"
+	"strconv"
 	"time"
 
 	"cosavlink/internal/cosplay"
@@ -38,6 +40,7 @@ func New(c *cosplay.Client, j *javdb.Client) (*Server, error) {
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", s.handleIndex)
+	mux.HandleFunc("/api/videos", s.handleVideos)
 	mux.HandleFunc("/api/magnets", s.handleMagnets)
 	return mux
 }
@@ -56,10 +59,14 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 
 	var data indexData
-	videos, err := s.cosplay.Latest(ctx)
+	videos, err := s.cosplay.Page(ctx, 1)
 	if err != nil {
-		log.Printf("cosplay latest: %v", err)
+		log.Printf("cosplay page 1: %v", err)
 		data.Error = "获取 cosplay 列表失败：" + err.Error()
+	}
+	// Limit to 16 videos for the initial render.
+	if len(videos) > 16 {
+		videos = videos[:16]
 	}
 	data.Videos = videos
 
@@ -69,14 +76,43 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+type videosResponse struct {
+	Videos []model.Video `json:"videos"`
+	Page   int           `json:"page"`
+	Error  string        `json:"error,omitempty"`
+}
+
+func (s *Server) handleVideos(w http.ResponseWriter, r *http.Request) {
+	page := 1
+	if p, err := strconv.Atoi(r.URL.Query().Get("page")); err == nil && p > 1 {
+		page = p
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 25*time.Second)
+	defer cancel()
+
+	videos, err := s.cosplay.Page(ctx, page)
+	if err != nil {
+		log.Printf("cosplay page %d: %v", page, err)
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		w.WriteHeader(http.StatusBadGateway)
+		_ = json.NewEncoder(w).Encode(videosResponse{Page: page, Error: err.Error()})
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	_ = json.NewEncoder(w).Encode(videosResponse{Videos: videos, Page: page})
+}
+
 func (s *Server) handleMagnets(w http.ResponseWriter, r *http.Request) {
 	code := r.URL.Query().Get("code")
+	title := r.URL.Query().Get("title")
 
 	// Generous timeout: the first lookup may solve a Cloudflare challenge.
 	ctx, cancel := context.WithTimeout(r.Context(), 90*time.Second)
 	defer cancel()
 
-	res, err := s.javdb.Magnets(ctx, code)
+	res, err := s.javdb.Magnets(ctx, code, title)
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	if err != nil {
 		w.WriteHeader(http.StatusBadGateway)

@@ -30,12 +30,17 @@ type Magnet struct {
 	Date string `json:"date"`
 	// Tags are extra labels such as "高清"/"HD"/"字幕".
 	Tags []string `json:"tags"`
+	// Source indicates where the magnet was found: "" for main magnets,
+	// "comment" for user-posted magnets in the short comments section.
+	Source string `json:"source,omitempty"`
 }
 
-// MagnetResult is the cached outcome of a javdb lookup for one code.
+// MagnetResult is the cached outcome of a javdb lookup for one code/title.
 type MagnetResult struct {
-	// Code is the normalized code that was looked up.
+	// Code is the normalized code or title that was looked up.
 	Code string `json:"code"`
+	// Query is the actual search term used on javdb (may differ from Code).
+	Query string `json:"query,omitempty"`
 	// Magnets is the list found (may be empty).
 	Magnets []Magnet `json:"magnets"`
 	// DetailURL is the javdb.com video page the magnets came from, if any.
