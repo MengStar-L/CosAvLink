@@ -1,0 +1,166 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="referrer" content="no-referrer">
+<title>CosAvLink · 最新视频</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; font-family: system-ui, "Segoe UI", "Microsoft YaHei", sans-serif;
+    background: #0e1116; color: #e6e6e6; line-height: 1.5;
+  }
+  header {
+    padding: 16px 20px; border-bottom: 1px solid #222a35;
+    display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap;
+    position: sticky; top: 0; background: #0e1116ee; backdrop-filter: blur(6px); z-index: 5;
+  }
+  header h1 { font-size: 18px; margin: 0; }
+  header .sub { color: #8a94a6; font-size: 13px; }
+  main { padding: 18px 20px 60px; }
+  .err-banner { background: #3a1d1d; border: 1px solid #7a3030; color: #ffb3b3;
+    padding: 10px 14px; border-radius: 8px; margin-bottom: 16px; }
+  .grid {
+    display: grid; gap: 16px;
+    grid-template-columns: repeat(auto-fill, minmax(230px, 1fr));
+  }
+  .card { background: #161b22; border: 1px solid #222a35; border-radius: 10px;
+    overflow: hidden; display: flex; flex-direction: column; }
+  .card .cover { display: block; aspect-ratio: 1 / 1; background: #0b0e13; overflow: hidden; }
+  .card .cover img { width: 100%; height: 100%; object-fit: cover; display: block; }
+  .card .body { padding: 10px 12px 12px; display: flex; flex-direction: column; gap: 8px; flex: 1; }
+  .card .title { font-size: 13px; color: #cdd5e0; max-height: 3.1em; overflow: hidden;
+    display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+  .meta { display: flex; align-items: center; gap: 8px; }
+  .code { background: #1f6feb33; color: #79c0ff; border: 1px solid #1f6feb55;
+    padding: 1px 8px; border-radius: 999px; font-size: 12px; font-weight: 600; letter-spacing: .3px; }
+  .nocode { color: #6e7681; font-size: 12px; }
+  .btn { margin-top: auto; background: #238636; color: #fff; border: none; border-radius: 7px;
+    padding: 7px 10px; font-size: 13px; cursor: pointer; }
+  .btn:hover { background: #2ea043; }
+  .btn:disabled { background: #30363d; color: #8a94a6; cursor: default; }
+  .magnets { font-size: 12px; }
+  .magnets .loading { color: #8a94a6; padding: 6px 0; }
+  .magnets .warn { color: #d29922; padding: 6px 0; }
+  .magnets .err { color: #ff7b72; padding: 6px 0; }
+  .magnets a.detail { display: inline-block; color: #79c0ff; margin: 4px 0; text-decoration: none; }
+  .mlist { list-style: none; margin: 6px 0 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+  .mlist li { background: #0d1117; border: 1px solid #222a35; border-radius: 7px; padding: 8px; }
+  .mname { color: #cdd5e0; word-break: break-all; }
+  .mmeta { display: flex; flex-wrap: wrap; gap: 6px; margin: 5px 0; color: #8a94a6; }
+  .mmeta .t { background: #30363d; color: #adbac7; border-radius: 4px; padding: 0 6px; }
+  .mact { display: flex; gap: 8px; }
+  .mact a.open { flex: 1; text-align: center; background: #1f6feb; color: #fff; border-radius: 6px;
+    padding: 5px; text-decoration: none; }
+  .mact a.open:hover { background: #388bfd; }
+  .mact .copy { background: #30363d; color: #cdd5e0; border: none; border-radius: 6px; padding: 5px 10px; cursor: pointer; }
+  .mact .copy:hover { background: #3c444d; }
+  footer { color: #6e7681; font-size: 12px; padding: 0 20px 30px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>CosAvLink</h1>
+  <span class="sub">cosplay.jav.pw 最新视频 · 点击「获取磁力」实时查询 javdb</span>
+</header>
+<main>
+  {{if .Error}}<div class="err-banner">{{.Error}}</div>{{end}}
+  <div class="grid">
+    {{range .Videos}}
+    <div class="card">
+      <a class="cover" href="{{.DetailURL}}" target="_blank" rel="noopener noreferrer">
+        <img loading="lazy" src="{{.Cover}}" alt="">
+      </a>
+      <div class="body">
+        <div class="title" title="{{.Title}}">{{.Title}}</div>
+        <div class="meta">
+          {{if .Code}}<span class="code">{{.Code}}</span>{{else}}<span class="nocode">无番号</span>{{end}}
+        </div>
+        {{if .Code}}<button class="btn" data-code="{{.Code}}">获取磁力</button>{{end}}
+        <div class="magnets" hidden></div>
+      </div>
+    </div>
+    {{end}}
+  </div>
+</main>
+<footer>
+  仅用于个人学习与技术研究。磁力链接来自第三方网站 javdb.com，资源与版权由对应站点负责。
+</footer>
+<script>
+document.querySelectorAll('.btn[data-code]').forEach(function (btn) {
+  btn.addEventListener('click', function () { loadMagnets(btn); });
+});
+
+async function loadMagnets(btn) {
+  var code = btn.dataset.code;
+  var box = btn.parentElement.querySelector('.magnets');
+  var orig = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = '加载中…';
+  box.hidden = false;
+  box.innerHTML = '<div class="loading">正在通过无头浏览器查询 javdb…（首次或遇到 Cloudflare 时较慢）</div>';
+  try {
+    var r = await fetch('/api/magnets?code=' + encodeURIComponent(code));
+    var data = await r.json();
+    renderMagnets(box, data);
+  } catch (e) {
+    box.innerHTML = '<div class="err">请求失败：' + escapeHtml(String(e)) + '</div>';
+  } finally {
+    btn.disabled = false;
+    btn.textContent = orig;
+  }
+}
+
+function renderMagnets(box, data) {
+  if (data.error) { box.innerHTML = '<div class="err">' + escapeHtml(data.error) + '</div>'; return; }
+
+  var detail = data.detailUrl
+    ? '<a class="detail" target="_blank" rel="noopener noreferrer" href="' + escapeAttr(data.detailUrl) + '">在 javdb 查看 ↗</a>'
+    : '';
+
+  if (data.blocked) {
+    box.innerHTML = '<div class="warn">' + escapeHtml(data.note || '被 Cloudflare 拦截，请稍后重试') + '</div>';
+    return;
+  }
+  var list = data.magnets || [];
+  if (!list.length) {
+    box.innerHTML = '<div class="warn">' + escapeHtml(data.note || '暂无磁力') + '</div>' + detail;
+    return;
+  }
+
+  var html = detail + '<ul class="mlist">';
+  list.forEach(function (m) {
+    var tags = (m.tags || []).map(function (t) { return '<span class="t">' + escapeHtml(t) + '</span>'; }).join('');
+    var meta = (m.size ? '<span>' + escapeHtml(m.size) + '</span>' : '')
+             + (m.date ? '<span>' + escapeHtml(m.date) + '</span>' : '') + tags;
+    html += '<li>'
+      + '<div class="mname">' + escapeHtml(m.name || 'magnet') + '</div>'
+      + '<div class="mmeta">' + meta + '</div>'
+      + '<div class="mact">'
+      + '<a class="open" href="' + escapeAttr(m.link) + '">打开磁力</a>'
+      + '<button class="copy" data-link="' + escapeAttr(m.link) + '">复制</button>'
+      + '</div></li>';
+  });
+  html += '</ul>';
+  box.innerHTML = html;
+
+  box.querySelectorAll('.copy').forEach(function (b) {
+    b.addEventListener('click', function () {
+      navigator.clipboard.writeText(b.dataset.link).then(function () {
+        b.textContent = '已复制'; setTimeout(function () { b.textContent = '复制'; }, 1500);
+      });
+    });
+  });
+}
+
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, function (c) {
+    return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
+  });
+}
+function escapeAttr(s) { return escapeHtml(s); }
+</script>
+</body>
+</html>
