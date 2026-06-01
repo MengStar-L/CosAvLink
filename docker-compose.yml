@@ -12,9 +12,9 @@ services:
     build: .
     container_name: cosavlink
     ports:
-      - "8080:8080"
+      - "2300:2300"
     environment:
-      - PORT=8080
+      - PORT=2300
       - FLARESOLVERR_URL=http://flaresolverr:8191/v1
     depends_on:
       - flaresolverr

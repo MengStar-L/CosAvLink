@@ -21,7 +21,7 @@ docker compose up -d
 
 # 2) 启动服务
 go run ./cmd/server
-# 打开 http://localhost:8080
+# 打开 http://localhost:2300
 ```
 
 > 首次点击「获取磁力」时，FlareSolverr 会自动解决 Cloudflare 验证，可能需要等待 30-60 秒。
@@ -30,13 +30,13 @@ go run ./cmd/server
 
 | 变量 | 默认值 | 说明 |
 | --- | --- | --- |
-| `PORT` | `8080` | HTTP 端口 |
+| `PORT` | `2300` | HTTP 端口 |
 | `FLARESOLVERR_URL` | `http://localhost:8191/v1` | FlareSolverr API 地址 |
 | `MAX_PARALLEL` | `2` | 并发请求数上限 |
 
 ```bash
 # 例：自定义端口 + 远程 FlareSolverr
-PORT=9000 FLARESOLVERR_URL=http://my-server:8191/v1 go run ./cmd/server
+PORT=3000 FLARESOLVERR_URL=http://my-server:8191/v1 go run ./cmd/server
 ```
 
 ## 关于 Cloudflare

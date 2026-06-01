@@ -6,7 +6,7 @@
 //
 // Configuration via environment variables:
 //
-//	PORT              HTTP port (default 8080)
+//	PORT              HTTP port (default 2300)
 //	FLARESOLVERR_URL  FlareSolverr API endpoint (default http://localhost:8191/v1)
 //	MAX_PARALLEL      max concurrent FlareSolverr requests (default 2)
 package main
@@ -29,7 +29,7 @@ import (
 )
 
 func main() {
-	addr := ":" + getenv("PORT", "8080")
+	addr := ":" + getenv("PORT", "2300")
 	flareURL := getenv("FLARESOLVERR_URL", "http://localhost:8191/v1")
 	maxParallel := getenvInt("MAX_PARALLEL", 2)
 
