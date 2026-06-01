@@ -9,21 +9,21 @@ interface Video {
 }
 
 interface Magnet {
-  name: string
-  link: string
-  size: string
-  date: string
-  tags: string[]
-  source: string
+  name?: string
+  link?: string
+  size?: string
+  date?: string
+  tags?: string[]
+  source?: string
 }
 
 interface MagnetResult {
   code: string
-  query: string
-  magnets: Magnet[]
-  detailUrl: string
-  blocked: boolean
-  note: string
+  query?: string
+  magnets?: Magnet[]
+  detailUrl?: string
+  blocked?: boolean
+  note?: string
 }
 
 type MagnetStatus = 'waiting' | 'loading' | 'done' | 'error'
@@ -49,7 +49,7 @@ function App() {
     setLoading(true)
     setError('')
     try {
-      const data = await GetVideos(pageNum)
+      const data = await GetVideos(pageNum) as unknown as Video[]
       if (!data || data.length === 0) {
         setError('没有更多视频了')
         setVideos([])
@@ -81,7 +81,7 @@ function App() {
   const prefetchPage = useCallback(async (pageNum: number) => {
     if (prefetchedRef.current.has(pageNum)) return
     try {
-      const data = await GetVideos(pageNum)
+      const data = await GetVideos(pageNum) as unknown as Video[]
       if (data && data.length > 0) {
         prefetchedRef.current.set(pageNum, data)
       }
@@ -106,7 +106,7 @@ function App() {
     const cacheKey = code || ('title:' + title)
     setMagnetStates(prev => ({ ...prev, [cacheKey]: { status: 'loading' } }))
     try {
-      const data = await GetMagnets(code, title)
+      const data = await GetMagnets(code, title) as unknown as MagnetResult
       setMagnetStates(prev => ({ ...prev, [cacheKey]: { status: 'done', data } }))
     } catch (e: any) {
       setMagnetStates(prev => ({ ...prev, [cacheKey]: { status: 'error', data: { note: String(e) } as MagnetResult } }))
@@ -290,7 +290,7 @@ function MagnetItem({ magnet }: { magnet: Magnet }) {
   const [copied, setCopied] = useState(false)
 
   const copyLink = () => {
-    navigator.clipboard.writeText(magnet.link).then(() => {
+    navigator.clipboard.writeText(magnet.link || '').then(() => {
       setCopied(true)
       setTimeout(() => setCopied(false), 1500)
     })
