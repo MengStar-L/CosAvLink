@@ -11,5 +11,8 @@
 # Claude Code local settings
 /.claude/
 
+# Browser profile (Chrome cookies, cache)
+/.cosavlink-browser/
+
 # Local scratch / scraped HTML dumps
 *_raw.html
