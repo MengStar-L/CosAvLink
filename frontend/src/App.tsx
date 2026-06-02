@@ -28,6 +28,9 @@ interface MagnetResult {
 
 type MagnetStatus = 'waiting' | 'loading' | 'done' | 'error'
 
+// How many videos to aim for per page (upper bound; actual count depends on grid fill)
+const TARGET_COUNT = 120
+
 /* ── Splash screen ─────────────────────────────────────── */
 
 function Splash({ onFinish }: { onFinish: () => void }) {
@@ -61,63 +64,133 @@ function Splash({ onFinish }: { onFinish: () => void }) {
 
 function App() {
   const [showSplash, setShowSplash] = useState(true)
-  const [page, setPage] = useState(1)
   const [videos, setVideos] = useState<Video[]>([])
   const [loading, setLoading] = useState(true)
+  const [loadingMore, setLoadingMore] = useState(false)
   const [error, setError] = useState('')
   const [selected, setSelected] = useState<number | null>(null)
   const [pageDir, setPageDir] = useState<'left' | 'right' | null>(null)
 
+  // Current "app page" number
+  const [appPage, setAppPage] = useState(1)
+
+  // Tracks the next cosplay source page to fetch globally
+  const nextSourcePage = useRef(1)
+
+  // Maps app page number -> { start, end } source page range (for re-fetching)
+  const pageRanges = useRef<Map<number, { start: number; end: number }>>(new Map())
+
+  // Source page cache to avoid re-fetching
+  const sourceCache = useRef<Map<number, Video[]>>(new Map())
+
   const [magnetStates, setMagnetStates] = useState<Record<string, { status: MagnetStatus; data?: MagnetResult }>>({})
-  const prefetchedRef = useRef<Map<number, Video[]>>(new Map())
+  const gridRef = useRef<HTMLDivElement>(null)
 
-  /* ── Data loading ─── */
+  /* ── Fetch one source page (with cache) ─── */
 
-  const loadPage = useCallback(async (pageNum: number) => {
+  const fetchSourcePage = useCallback(async (sp: number): Promise<Video[]> => {
+    if (sourceCache.current.has(sp)) return sourceCache.current.get(sp)!
+    const data = await GetVideos(sp) as unknown as Video[]
+    if (data && data.length > 0) {
+      sourceCache.current.set(sp, data)
+      return data
+    }
+    return []
+  }, [])
+
+  /* ── Load an app page by fetching multiple source pages ─── */
+
+  const loadAppPage = useCallback(async (ap: number, startSource: number) => {
     setLoading(true)
     setError('')
     setSelected(null)
+
+    const allVideos: Video[] = []
+    let sp = startSource
+
     try {
-      const data = await GetVideos(pageNum) as unknown as Video[]
-      if (!data || data.length === 0) {
+      // Fetch source pages until we have enough or run out
+      while (allVideos.length < TARGET_COUNT) {
+        const batch = await fetchSourcePage(sp)
+        if (batch.length === 0) break
+        allVideos.push(...batch)
+        sp++
+      }
+
+      if (allVideos.length === 0) {
         setError('没有更多视频了')
         setVideos([])
       } else {
-        setVideos(data)
+        setVideos(allVideos)
+        pageRanges.current.set(ap, { start: startSource, end: sp - 1 })
       }
     } catch (e: any) {
       setError('加载失败：' + String(e))
     } finally {
       setLoading(false)
     }
-  }, [])
+  }, [fetchSourcePage])
 
-  const goToPage = useCallback((pageNum: number) => {
-    if (pageNum < 1) return
-    setPageDir(pageNum > page ? 'right' : 'left')
-    const prefetched = prefetchedRef.current.get(pageNum)
-    if (prefetched) {
-      setVideos(prefetched)
-      prefetchedRef.current.delete(pageNum)
-      setPage(pageNum)
-      setLoading(false)
-    } else {
-      setPage(pageNum)
-      loadPage(pageNum)
+  /* ── Navigate between app pages ─── */
+
+  const goToAppPage = useCallback((target: number) => {
+    if (target < 1) return
+    setPageDir(target > appPage ? 'right' : 'left')
+
+    const range = pageRanges.current.get(target)
+    if (range) {
+      // Reconstruct from cache
+      const all: Video[] = []
+      for (let sp = range.start; sp <= range.end; sp++) {
+        const cached = sourceCache.current.get(sp)
+        if (cached) all.push(...cached)
+      }
+      if (all.length > 0) {
+        setVideos(all)
+        setAppPage(target)
+        setLoading(false)
+        setSelected(null)
+        setTimeout(() => setPageDir(null), 50)
+        return
+      }
     }
+
+    // Not cached — need to re-fetch from the known start
+    const startSp = range?.start || nextSourcePage.current
+    setAppPage(target)
+    loadAppPage(target, startSp)
     setTimeout(() => setPageDir(null), 50)
-  }, [page, loadPage])
+  }, [appPage, loadAppPage])
 
-  const prefetchPage = useCallback(async (pageNum: number) => {
-    if (prefetchedRef.current.has(pageNum)) return
-    try {
-      const data = await GetVideos(pageNum) as unknown as Video[]
-      if (data && data.length > 0) prefetchedRef.current.set(pageNum, data)
-    } catch { /* silent */ }
-  }, [])
+  const goNext = useCallback(() => {
+    const lastRange = pageRanges.current.get(appPage)
+    const nextStart = lastRange ? lastRange.end + 1 : nextSourcePage.current
+    setPageDir('right')
+    setAppPage(appPage + 1)
+    loadAppPage(appPage + 1, nextStart)
+    setTimeout(() => setPageDir(null), 50)
+  }, [appPage, loadAppPage])
 
-  useEffect(() => { loadPage(1); prefetchPage(2) }, [loadPage, prefetchPage])
-  useEffect(() => { prefetchPage(page + 1) }, [page, prefetchPage])
+  /* ── Initial load ─── */
+
+  useEffect(() => {
+    loadAppPage(1, 1).then(() => {
+      // Update nextSourcePage after initial load
+      const range = pageRanges.current.get(1)
+      if (range) nextSourcePage.current = range.end + 1
+    })
+  }, [loadAppPage])
+
+  /* ── Pre-fetch next app page in background ─── */
+
+  useEffect(() => {
+    const range = pageRanges.current.get(appPage)
+    if (!range) return
+    const nextStart = range.end + 1
+    // Pre-warm the first source page of the next app page
+    fetchSourcePage(nextStart).catch(() => {})
+    fetchSourcePage(nextStart + 1).catch(() => {})
+  }, [appPage, videos, fetchSourcePage])
 
   /* ── Magnets ─── */
 
@@ -144,9 +217,7 @@ function App() {
     if (selected === null || !videos[selected]) return
     const v = videos[selected]
     const key = v.code || ('title:' + v.title)
-    if (!magnetStates[key]) {
-      fetchMagnets(v.code, v.title)
-    }
+    if (!magnetStates[key]) fetchMagnets(v.code, v.title)
   }, [selected, videos, magnetStates, fetchMagnets])
 
   const handleSelect = useCallback((idx: number) => {
@@ -157,13 +228,13 @@ function App() {
 
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
-      if (e.key === 'ArrowLeft' && page > 1) goToPage(page - 1)
-      if (e.key === 'ArrowRight') goToPage(page + 1)
+      if (e.key === 'ArrowLeft') goToAppPage(appPage - 1)
+      if (e.key === 'ArrowRight') goNext()
       if (e.key === 'Escape') setSelected(null)
     }
     window.addEventListener('keydown', handler)
     return () => window.removeEventListener('keydown', handler)
-  }, [page, goToPage])
+  }, [appPage, goToAppPage, goNext])
 
   /* ── Selected video ─── */
 
@@ -171,9 +242,7 @@ function App() {
   const selKey = selVideo ? (selVideo.code || ('title:' + selVideo.title)) : ''
   const selMagnet = selKey ? magnetStates[selKey] : undefined
 
-  if (showSplash) {
-    return <Splash onFinish={() => setShowSplash(false)} />
-  }
+  if (showSplash) return <Splash onFinish={() => setShowSplash(false)} />
 
   return (
     <div className="app fade-in">
@@ -196,7 +265,10 @@ function App() {
         <div className="grid-wrap">
           {error && <div className="err-banner">{error}</div>}
 
-          <div className={`grid ${pageDir === 'right' ? 'slide-in-right' : pageDir === 'left' ? 'slide-in-left' : ''}`}>
+          <div
+            className={`grid ${pageDir === 'right' ? 'slide-in-right' : pageDir === 'left' ? 'slide-in-left' : ''}`}
+            ref={gridRef}
+          >
             {loading && videos.length === 0 ? (
               <div className="grid-loading">
                 <div className="spinner" />
@@ -205,9 +277,9 @@ function App() {
             ) : (
               videos.map((v, i) => (
                 <div
-                  key={page + '-' + i}
+                  key={v.detailUrl || i}
                   className={`card card-enter ${selected === i ? 'card-selected' : ''}`}
-                  style={{ animationDelay: `${i * 40}ms` }}
+                  style={{ animationDelay: `${Math.min(i, 30) * 30}ms` }}
                   onClick={() => handleSelect(i)}
                 >
                   <div className="card-cover">
@@ -218,6 +290,13 @@ function App() {
                   <div className="card-title" title={v.title}>{v.title}</div>
                 </div>
               ))
+            )}
+
+            {loadingMore && (
+              <div className="grid-loading-more">
+                <div className="spinner small" />
+                <span>加载更多…</span>
+              </div>
             )}
           </div>
         </div>
@@ -247,12 +326,12 @@ function App() {
       {/* Footer / Pager */}
       <footer>
         <div className="pager">
-          <button className="page-btn" disabled={page <= 1} onClick={() => goToPage(page - 1)}>
+          <button className="page-btn" disabled={appPage <= 1} onClick={() => goToAppPage(appPage - 1)}>
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="15 18 9 12 15 6" /></svg>
             上一页
           </button>
-          <span className="page-info">第 {page} 页</span>
-          <button className="page-btn" onClick={() => goToPage(page + 1)}>
+          <span className="page-info">第 {appPage} 页 · {videos.length} 个视频</span>
+          <button className="page-btn" onClick={goNext}>
             下一页
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="9 18 15 12 9 6" /></svg>
           </button>
