@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"log"
 
 	"cosavlink/internal/browser"
 	"cosavlink/internal/cosplay"
@@ -33,10 +34,12 @@ func (a *App) startup(ctx context.Context) {
 	a.javdb = javdb.New(a.bm)
 }
 
-// shutdown is called when the app is closing.
+// shutdown is called when the app is closing. Ensures Chrome is fully killed.
 func (a *App) shutdown(ctx context.Context) {
 	if a.bm != nil {
-		a.bm.Close()
+		if err := a.bm.Close(); err != nil {
+			log.Printf("browser close: %v", err)
+		}
 	}
 }
 

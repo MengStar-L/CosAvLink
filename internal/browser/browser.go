@@ -45,6 +45,7 @@ type Manager struct {
 	sem      chan struct{}
 	initOnce sync.Once
 	browser  *rod.Browser
+	launcher *launcher.Launcher
 	initErr  error
 	closeMu  sync.Mutex
 	closed   bool
@@ -81,6 +82,7 @@ func (m *Manager) ensure() error {
 		if bin, ok := launcher.LookPath(); ok {
 			l = l.Bin(bin)
 		}
+		m.launcher = l
 
 		controlURL, err := l.Launch()
 		if err != nil {
@@ -190,15 +192,25 @@ func (m *Manager) ReleaseSem() {
 	<-m.sem
 }
 
-// Close shuts down the browser if it was launched.
+// Close shuts down the browser and kills all Chrome processes if it was launched.
 func (m *Manager) Close() error {
 	m.closeMu.Lock()
 	defer m.closeMu.Unlock()
-	if m.closed || m.browser == nil {
+	if m.closed {
 		return nil
 	}
 	m.closed = true
-	return m.browser.Close()
+
+	// First try graceful browser close.
+	if m.browser != nil {
+		_ = m.browser.Close()
+	}
+
+	// Then kill the Chrome process tree via the launcher (kills child processes too).
+	if m.launcher != nil {
+		m.launcher.Kill()
+	}
+	return nil
 }
 
 // looksReal reports whether HTML appears to be a genuine javdb page rather
