@@ -2,14 +2,14 @@
 // or title.
 //
 // javdb sits behind Cloudflare, so every lookup goes through a go-rod browser
-// (see package browser). Flow:
+// (see package browser). The browser runs in headful mode and waits up to
+// 60 seconds for Cloudflare challenges to resolve automatically.
+//
+// Flow per lookup:
 //
 //	/search?q=QUERY&f=all  ->  pick best result  ->  /v/XXXX detail page
 //	->  parse "#magnets-content .item" rows for magnet URIs.
 //	->  if no magnets, parse "#short-comments" for user-posted magnet links.
-//
-// Results are cached (positive long, negative/blocked short) and concurrent
-// lookups of the same query are de-duplicated with singleflight.
 package javdb
 
 import (
@@ -31,12 +31,11 @@ import (
 
 const (
 	base          = "https://javdb.com"
-	lookupTimeout = 90 * time.Second
-	waitTimeout   = 25 * time.Second
+	lookupTimeout = 120 * time.Second
 
 	positiveTTL = 12 * time.Hour
 	negativeTTL = 1 * time.Hour
-	blockedTTL  = 2 * time.Minute
+	blockedTTL  = 5 * time.Minute
 )
 
 var (
@@ -56,8 +55,7 @@ func New(bm *browser.Manager) *Client {
 	return &Client{bm: bm, cache: cache.New[string, model.MagnetResult]()}
 }
 
-// Magnets returns the magnet result for a code or title. When code is
-// non-empty it is used for the search; otherwise title is used.
+// Magnets returns the magnet result for a code or title.
 func (c *Client) Magnets(ctx context.Context, code, title string) (model.MagnetResult, error) {
 	code = strings.ToUpper(strings.TrimSpace(code))
 	title = strings.TrimSpace(title)
@@ -102,88 +100,79 @@ func (c *Client) Magnets(ctx context.Context, code, title string) (model.MagnetR
 }
 
 // lookup performs the actual two-step navigation and parse.
+// Uses NavigateAndWait which waits for Cloudflare challenges to resolve.
 func (c *Client) lookup(ctx context.Context, query string, isCode bool) model.MagnetResult {
 	res := model.MagnetResult{Code: query, Query: query}
 
-	err := c.bm.WithPage(ctx, func(page *rod.Page) error {
-		// --- step 1: search ---
-		searchURL := base + "/search?q=" + url.QueryEscape(query) + "&f=all"
-		if err := page.Navigate(searchURL); err != nil {
-			return err
-		}
-		_ = page.WaitLoad()
-
-		if _, err := page.Timeout(waitTimeout).Element("div.movie-list"); err != nil {
-			if browser.LooksBlocked(pageTitle(page), pageHTML(page)) {
-				return browser.ErrBlocked
-			}
-			res.Note = "javdb 未找到匹配结果"
-			return nil
-		}
-
-		html := pageHTML(page)
-		var detailURL string
-		if isCode {
-			detailURL = pickResultByCode(html, query)
-		} else {
-			detailURL = pickResultByTitle(html, query)
-		}
-		if detailURL == "" {
-			res.Note = "javdb 未找到匹配结果"
-			return nil
-		}
-		res.DetailURL = detailURL
-
-		// --- step 2: detail page ---
-		if err := page.Navigate(detailURL); err != nil {
-			return err
-		}
-		_ = page.WaitLoad()
-
-		if _, err := page.Timeout(waitTimeout).Element("#magnets-content"); err != nil {
-			if browser.LooksBlocked(pageTitle(page), pageHTML(page)) {
-				return browser.ErrBlocked
-			}
-			// No magnets section — try comment fallback below
-		}
-
-		detailHTML := pageHTML(page)
-
-		// Try main magnets section first.
-		if strings.Contains(detailHTML, "magnets-content") {
-			res.Magnets = parseMagnets(detailHTML)
-		}
-
-		// Fallback: if no magnets found, try extracting from short comments.
-		if len(res.Magnets) == 0 {
-			commentMagnets := parseCommentMagnets(detailHTML)
-			if len(commentMagnets) > 0 {
-				res.Magnets = commentMagnets
-				res.Note = "磁力来自 javdb 短评（用户分享）"
-			} else {
-				res.Note = "未找到磁力（可能暂无资源，或需要登录查看）"
-			}
-		}
-		return nil
-	})
-
+	// --- step 1: search ---
+	searchURL := base + "/search?q=" + url.QueryEscape(query) + "&f=all"
+	page, err := c.bm.NavigateAndWait(ctx, searchURL)
 	if err != nil {
-		if strings.Contains(err.Error(), "blocked by Cloudflare") || err == browser.ErrBlocked {
+		if err == browser.ErrBlocked {
 			res.Blocked = true
 			res.Note = "被 Cloudflare 拦截，请稍后重试"
 		} else {
 			res.Note = fmt.Sprintf("查询出错：%v", err)
 		}
+		return res
+	}
+	defer func() {
+		_ = page.Close()
+		c.bm.ReleaseSem()
+	}()
+
+	html := pageHTML(page)
+	if !strings.Contains(html, "movie-list") {
+		res.Note = "javdb 未找到匹配结果"
+		return res
+	}
+
+	var detailURL string
+	if isCode {
+		detailURL = pickResultByCode(html, query)
+	} else {
+		detailURL = pickResultByTitle(html, query)
+	}
+	if detailURL == "" {
+		res.Note = "javdb 未找到匹配结果"
+		return res
+	}
+	res.DetailURL = detailURL
+
+	// --- step 2: detail page ---
+	page2, err := c.bm.NavigateAndWait(ctx, detailURL)
+	if err != nil {
+		if err == browser.ErrBlocked {
+			res.Blocked = true
+			res.Note = "被 Cloudflare 拦截，请稍后重试"
+		} else {
+			res.Note = fmt.Sprintf("查询详情页出错：%v", err)
+		}
+		return res
+	}
+	defer func() {
+		_ = page2.Close()
+		c.bm.ReleaseSem()
+	}()
+
+	detailHTML := pageHTML(page2)
+
+	// Try main magnets section first.
+	if strings.Contains(detailHTML, "magnets-content") {
+		res.Magnets = parseMagnets(detailHTML)
+	}
+
+	// Fallback: if no magnets found, try extracting from short comments.
+	if len(res.Magnets) == 0 {
+		commentMagnets := parseCommentMagnets(detailHTML)
+		if len(commentMagnets) > 0 {
+			res.Magnets = commentMagnets
+			res.Note = "磁力来自 javdb 短评（用户分享）"
+		} else {
+			res.Note = "未找到磁力（可能暂无资源，或需要登录查看）"
+		}
 	}
 	return res
-}
-
-func pageTitle(page *rod.Page) string {
-	info, err := page.Info()
-	if err != nil || info == nil {
-		return ""
-	}
-	return info.Title
 }
 
 func pageHTML(page *rod.Page) string {
