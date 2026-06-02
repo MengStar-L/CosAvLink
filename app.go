@@ -3,8 +3,8 @@ package main
 import (
 	"context"
 
+	"cosavlink/internal/browser"
 	"cosavlink/internal/cosplay"
-	"cosavlink/internal/flaresolverr"
 	"cosavlink/internal/javdb"
 	"cosavlink/internal/model"
 )
@@ -15,7 +15,7 @@ type App struct {
 	ctx     context.Context
 	cosplay *cosplay.Client
 	javdb   *javdb.Client
-	fs      *flaresolverr.Client
+	bm      *browser.Manager
 }
 
 // NewApp creates a new App instance.
@@ -23,22 +23,20 @@ func NewApp() *App {
 	return &App{}
 }
 
-// startup is called when the Wails app starts. It initializes the
-// FlareSolverr client, cosplay client, and javdb client.
+// startup is called when the Wails app starts.
 func (a *App) startup(ctx context.Context) {
 	a.ctx = ctx
-	a.fs = flaresolverr.New(flaresolverr.Options{
-		URL:         "http://localhost:8191/v1",
+	a.bm = browser.New(browser.Options{
 		MaxParallel: 2,
 	})
 	a.cosplay = cosplay.New()
-	a.javdb = javdb.New(a.fs)
+	a.javdb = javdb.New(a.bm)
 }
 
 // shutdown is called when the app is closing.
 func (a *App) shutdown(ctx context.Context) {
-	if a.fs != nil {
-		a.fs.Close()
+	if a.bm != nil {
+		a.bm.Close()
 	}
 }
 
@@ -48,7 +46,6 @@ func (a *App) GetVideos(page int) ([]model.Video, error) {
 }
 
 // GetMagnets looks up magnet links on javdb for the given code or title.
-// At least one of code or title should be non-empty.
 func (a *App) GetMagnets(code, title string) (model.MagnetResult, error) {
 	return a.javdb.Magnets(a.ctx, code, title)
 }
